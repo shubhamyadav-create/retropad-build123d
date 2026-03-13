@@ -1,0 +1,182 @@
+import struct, math
+
+# ─────────────────────────────────────────────────────────────
+# THEORY
+# ─────────────────────────────────────────────────────────────
+#
+# 1. VOLUME — Divergence Theorem (Gauss's Theorem)
+#    For a closed triangle mesh, volume is:
+#
+#    V = (1/6) * |Σ (v1 · (v2 × v3))|
+#
+#    where v1, v2, v3 are vertices of each triangle.
+#    This is exact for watertight, manifold meshes.
+#
+# 2. VOLUMETRIC DIFFERENCE
+#    |V_A - V_B| — absolute difference between two part volumes
+#
+# 3. SYMMETRIC VOLUME DIFFERENCE (Set Theory)
+#    A Δ B = (A ∪ B) - (A ∩ B)
+#    Vol(A Δ B) = Vol(A) + Vol(B) - 2*Vol(A ∩ B)
+#
+#    For geometry that is symmetric about a plane:
+#    Mirror(A) = A  →  Vol(A Δ Mirror(A)) = 0
+#
+#    We verify this by checking bounding box symmetry
+#    and centroid reflection across the symmetry axis.
+# ─────────────────────────────────────────────────────────────
+
+
+def read_stl(path):
+    with open(path, 'rb') as f:
+        f.read(80)
+        num = struct.unpack('<I', f.read(4))[0]
+        tris = []
+        for _ in range(num):
+            f.read(12)
+            v1 = struct.unpack('<3f', f.read(12))
+            v2 = struct.unpack('<3f', f.read(12))
+            v3 = struct.unpack('<3f', f.read(12))
+            f.read(2)
+            tris.append((v1, v2, v3))
+    return tris
+
+
+def compute_volume(tris):
+    """
+    Divergence theorem formula for closed mesh volume.
+    V = (1/6) * |sum over triangles of: v1 . (v2 x v3)|
+    """
+    vol = 0.0
+    for v1, v2, v3 in tris:
+        vol += (
+            v1[0] * (v2[1]*v3[2] - v2[2]*v3[1])
+          - v1[1] * (v2[0]*v3[2] - v2[2]*v3[0])
+          + v1[2] * (v2[0]*v3[1] - v2[1]*v3[0])
+        )
+    return abs(vol / 6.0)
+
+
+def bounding_box(tris):
+    xs = [v[0] for t in tris for v in t]
+    ys = [v[1] for t in tris for v in t]
+    zs = [v[2] for t in tris for v in t]
+    return {
+        'xmin': min(xs), 'xmax': max(xs),
+        'ymin': min(ys), 'ymax': max(ys),
+        'zmin': min(zs), 'zmax': max(zs),
+        'cx': (min(xs)+max(xs))/2,
+        'cy': (min(ys)+max(ys))/2,
+        'cz': (min(zs)+max(zs))/2,
+    }
+
+
+def check_x_symmetry(tris):
+    """
+    Check geometric symmetry about X = cx plane.
+    For each triangle centroid (cx, cy, cz),
+    check if mirror centroid (2*axis - cx, cy, cz) exists.
+    Perfect symmetry → 100% match → symmetric volume diff = 0
+    """
+    bb = bounding_box(tris)
+    axis = bb['cx']
+
+    centroids = {}
+    for v1, v2, v3 in tris:
+        cx = round((v1[0]+v2[0]+v3[0])/3, 1)
+        cy = round((v1[1]+v2[1]+v3[1])/3, 1)
+        cz = round((v1[2]+v2[2]+v3[2])/3, 1)
+        centroids[(cx, cy, cz)] = centroids.get((cx, cy, cz), 0) + 1
+
+    matched = 0
+    for v1, v2, v3 in tris:
+        cx = round((v1[0]+v2[0]+v3[0])/3, 1)
+        cy = round((v1[1]+v2[1]+v3[1])/3, 1)
+        cz = round((v1[2]+v2[2]+v3[2])/3, 1)
+        mirror_cx = round(2*axis - cx, 1)
+        if (mirror_cx, cy, cz) in centroids:
+            matched += 1
+
+    total = len(tris)
+    pct = matched / total * 100
+    return matched, total, pct, axis
+
+
+def symmetric_volume_difference(tris):
+    """
+    For a single part symmetric about its own center plane:
+    Vol(A Δ Mirror(A)) = Vol(A) + Vol(Mirror(A)) - 2*Vol(A ∩ Mirror(A))
+    If perfectly symmetric: Vol(A) = Vol(Mirror(A)) and A ∩ Mirror(A) = A
+    Therefore: Vol(A Δ Mirror(A)) = 0
+
+    We approximate this as:
+    sym_diff_vol ≈ Vol(A) * (1 - symmetry_match_fraction) * 2
+    """
+    vol = compute_volume(tris)
+    matched, total, pct, axis = check_x_symmetry(tris)
+    sym_fraction = matched / total
+    approx_sym_diff = vol * (1 - sym_fraction) * 2
+    return vol, pct, approx_sym_diff
+
+
+PARTS = {
+    'Top_Shell':    'RetroPad - Top Shell.stl',
+    'Bottom_Shell': 'RetroPad - Bottom Shell.stl',
+    'D_Pad':        'RetroPad - D-Pad.stl',
+    'Button':       'RetroPad - Button.stl',
+}
+
+
+def main():
+    print("=" * 60)
+    print(" RETROPAD — VOLUMETRIC & SYMMETRIC DIFFERENCE PROOF")
+    print("=" * 60)
+
+    print("""
+FORMULA USED:
+  Volume        : V = (1/6)|Σ v1·(v2×v3)|  [Divergence Theorem]
+  Vol Diff      : |V_A - V_B|
+  Sym Vol Diff  : Vol(A Δ B) = Vol(A) + Vol(B) - 2·Vol(A∩B)
+                  ≈ 0 when geometry is mirror-symmetric
+""")
+
+    results = {}
+    for name, filename in PARTS.items():
+        try:
+            tris = read_stl(filename)
+            vol, sym_pct, sym_diff = symmetric_volume_difference(tris)
+            results[name] = vol
+            print(f"Part             : {name}")
+            print(f"  Triangles      : {len(tris)}")
+            print(f"  Volume         : {vol:.4f} mm³")
+            print(f"  X-Symmetry     : {sym_pct:.1f}% triangles have mirror match")
+            print(f"  Sym Vol Diff   : ~{sym_diff:.4f} mm³  (0 = perfect symmetry)")
+            print()
+        except FileNotFoundError:
+            print(f"  NOT FOUND: {filename}")
+            print()
+
+    if len(results) >= 2:
+        print("-" * 60)
+        print("VOLUMETRIC DIFFERENCES BETWEEN PARTS:")
+        names = list(results.keys())
+        for i in range(len(names)):
+            for j in range(i+1, len(names)):
+                a, b = names[i], names[j]
+                diff = abs(results[a] - results[b])
+                ratio = min(results[a], results[b]) / max(results[a], results[b]) * 100
+                print(f"  |{a} - {b}|")
+                print(f"    = |{results[a]:.4f} - {results[b]:.4f}|")
+                print(f"    = {diff:.4f} mm³  ({ratio:.2f}% volume match)")
+                print()
+
+    print("=" * 60)
+    print("CONCLUSION:")
+    print("  - Volume computed via Divergence Theorem on mesh triangles")
+    print("  - Symmetric Vol Diff ≈ 0 when part is geometrically symmetric")
+    print("  - Verified by checking mirror-centroid matches across X-axis")
+    print("=" * 60)
+
+
+if __name__ == "__main__":
+    main()
